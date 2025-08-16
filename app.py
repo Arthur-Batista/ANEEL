@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-
+import plotly.express as px
 
 st.set_page_config(layout="wide")
 
@@ -74,56 +74,75 @@ uf_selected = st.sidebar.selectbox("Selecione o estado", ufs)
 
 # Carregar dados filtrados (cacheado)
 df = load_data(uf_selected)
+# --------------------------
+# KPIs sempre visíveis
+# --------------------------
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Reclamações", f"{df['qtd_reclamacoes_recebidas'].sum():,}".replace(",", "."))
+col2.metric("Procedentes (%)", f"{(df['qtd_reclamacoes_procedentes'].sum() / df['qtd_reclamacoes_recebidas'].sum())*100:.2f}%")
+col3.metric("Prazo Médio Solução", f"{df['prazo_solucao'].mean():.1f} dias")
 
-if uf_selected == "Todos":
-    with st.container(border=True):
-        col_kpis, col_graficos = st.columns([2, 8])
-        with col_kpis:
-        # Cards KPI
-            # col1, col2, col3 = st.columns([5, 2, 3])
-            st.metric("Total Reclamações", f"{df['qtd_reclamacoes_recebidas'].sum():,}".replace(",", "."))
-            st.metric("Procedentes (%)", f"{(df['qtd_reclamacoes_procedentes'].sum() / df['qtd_reclamacoes_recebidas'].sum())*100:.2f}%")
-            st.metric("Prazo Médio Solução", f"{df['prazo_solucao'].mean():.1f} dias")
 
-        with col_graficos:
+# --------------------------
+# Criando abas
+# --------------------------
+tab1, tab2, tab3 = st.tabs(["🌍 Estados / Mapa", "🏙 Municípios & Canais", "📈 Evolução Temporal"])
 
-            # Gráfico 1 — Reclamações por UF
-            if uf_selected == "Todos":
-                df_estado = df.groupby('uf')['qtd_reclamacoes_recebidas'].sum().reset_index()
-                st.bar_chart(df_estado.set_index("uf"))
-else:
-    with st.container(border=True):
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Reclamações", f"{df['qtd_reclamacoes_recebidas'].sum():,}".replace(",", "."))
-        col2.metric("Procedentes (%)", f"{(df['qtd_reclamacoes_procedentes'].sum() / df['qtd_reclamacoes_recebidas'].sum())*100:.2f}%")
-        col3.metric("Prazo Médio Solução", f"{df['prazo_solucao'].mean():.1f} dias")
+# -------- TAB 1: Estados e Mapa --------
+with tab1:
+    if uf_selected == "Todos":
+        df_estado = df.groupby('uf')['qtd_reclamacoes_recebidas'].sum().reset_index()
+        st.bar_chart(df_estado.set_index("uf"))
 
-st.write("")
-st.write("")
-# Gráfico 2 — Top 10 municípios
-df_mun = df.groupby("municipio")["qtd_reclamacoes_recebidas"].sum().nlargest(10).reset_index()
+        # Mapa interativo
+        df_estado = df.groupby("uf")["qtd_reclamacoes_recebidas"].sum().reset_index()
+        fig = px.choropleth(
+            df_estado,
+            geojson="https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson",
+            locations="uf",
+            featureidkey="properties.sigla",
+            color="qtd_reclamacoes_recebidas",
+            color_continuous_scale="Reds",
+            hover_name="uf",
+            hover_data={'qtd_reclamacoes_recebidas': ':,2f'}
+        )
 
-col_mun, col_canal = st.columns(2)
+        fig.update_layout(
+            title_text='<b>Total de Reclamações por Estado</b>',
+            title_x=0.5,
+            height=600,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            geo=dict(
+                bgcolor='rgba(0,0,0,0)',
+                landcolor='rgb(40,40,40)',
+                subunitcolor='white'
+            ),
+            margin=dict(l=0, r=0, t=40, b=0)
+        )
+        fig.update_geos(fitbounds="locations", visible=False)
+        st.plotly_chart(fig, use_container_width=True)
 
-with col_mun:
-    with st.container(border=True):
+
+# -------- TAB 2: Municípios e Canais --------
+with tab2:
+    col_mun, col_canal = st.columns(2)
+
+    with col_mun:
+        df_mun = df.groupby("municipio")["qtd_reclamacoes_recebidas"].sum().nlargest(10).reset_index()
         st.write("### 🏙 Top 10 Municípios com mais Reclamações")
         st.table(df_mun)
-with col_canal:
-    with st.container(border=True):
-        # Gráfico 3 — Distribuição por canal
+
+    with col_canal:
         df_canal = df["canal_atendimento"].value_counts().reset_index()
         df_canal.columns = ["Canal", "Qtd"]
         st.write("### 📞 Reclamações por Canal de Atendimento")
         st.bar_chart(df_canal.set_index("Canal"))
 
-st.write("")
-st.write("")
 
-with st.container(border=True):
-    st.write("### 📈 Evolução Mensal de Reclamações")
-# ----------- Evolução Temporal  ---------------
-
-    df_mes = df.groupby(['ano','mes'])['qtd_reclamacoes_recebidas'].sum().reset_index()
-    df_mes['data'] = pd.to_datetime(df_mes['ano'].astype(str) + '-' + df_mes['mes'].astype(str) + '-01')
-    st.line_chart(df_mes.set_index("data")["qtd_reclamacoes_recebidas"])
+# -------- TAB 3: Evolução Temporal --------
+with tab3:
+        st.write("📅 Ver evolução mensal de reclamações")
+        df_mes = df.groupby(['ano','mes'])['qtd_reclamacoes_recebidas'].sum().reset_index()
+        df_mes['data'] = pd.to_datetime(df_mes['ano'].astype(str) + '-' + df_mes['mes'].astype(str) + '-01')
+        st.line_chart(df_mes.set_index("data")["qtd_reclamacoes_recebidas"])
