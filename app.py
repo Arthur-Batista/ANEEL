@@ -3,6 +3,8 @@ import pandas as pd
 import sqlite3
 import os
 import plotly.express as px
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
 st.set_page_config(layout="wide")
 
@@ -32,14 +34,14 @@ def load_data(uf: str):
     if uf != "Todos":
         query = f"""
         SELECT uf, municipio, canal_atendimento, qtd_reclamacoes_recebidas, 
-               qtd_reclamacoes_procedentes, prazo_solucao, data_registro
+               qtd_reclamacoes_procedentes, prazo_solucao, data_registro, distribuidora
         FROM reclamacoes
         WHERE uf = '{uf}'
         """
     else:
         query = """
         SELECT uf, municipio, canal_atendimento, qtd_reclamacoes_recebidas, 
-               qtd_reclamacoes_procedentes, prazo_solucao, data_registro
+               qtd_reclamacoes_procedentes, prazo_solucao, data_registro, distribuidora
         FROM reclamacoes
         """
 
@@ -86,11 +88,12 @@ col3.metric("Prazo Médio Solução", f"{df['prazo_solucao'].mean():.1f} dias")
 # --------------------------
 # Criando abas
 # --------------------------
-tab1, tab2, tab3 = st.tabs(["🌍 Estados / Mapa", "🏙 Municípios & Canais", "📈 Evolução Temporal"])
 
 # -------- TAB 1: Estados e Mapa --------
-with tab1:
-    if uf_selected == "Todos":
+if uf_selected == "Todos":
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 Estados / Mapa", "🏙 Municípios & Canais", "📈 Evolução Temporal", "Correlações", "Clusterização"])
+
+    with tab1:
         df_estado = df.groupby('uf')['qtd_reclamacoes_recebidas'].sum().reset_index()
         st.bar_chart(df_estado.set_index("uf"))
 
@@ -122,6 +125,8 @@ with tab1:
         )
         fig.update_geos(fitbounds="locations", visible=False)
         st.plotly_chart(fig, use_container_width=True)
+else:
+    tab2, tab3, tab4, tab5 = st.tabs(["🏙 Municípios & Canais", "📈 Evolução Temporal", "Correlações", "Clusterização"])
 
 
 # -------- TAB 2: Municípios e Canais --------
@@ -146,3 +151,99 @@ with tab3:
         df_mes = df.groupby(['ano','mes'])['qtd_reclamacoes_recebidas'].sum().reset_index()
         df_mes['data'] = pd.to_datetime(df_mes['ano'].astype(str) + '-' + df_mes['mes'].astype(str) + '-01')
         st.line_chart(df_mes.set_index("data")["qtd_reclamacoes_recebidas"])
+
+# ---------------- TAB 4: Correlações ----------
+import plotly.express as px
+with tab4:
+    st.subheader("📌 Correlação entre Prazo Médio de Solução e Taxa de Procedência")
+
+    # Agrupar dados por distribuidora
+    df_corr = df.groupby("distribuidora").agg({
+        "prazo_solucao": "mean",
+        "qtd_reclamacoes_procedentes": "sum",
+        "qtd_reclamacoes_recebidas": "sum"
+    }).reset_index()
+
+    # Calcular taxa de procedência
+    df_corr["taxa_procedencia"] = df_corr["qtd_reclamacoes_procedentes"] / df_corr["qtd_reclamacoes_recebidas"]
+
+    # Calcular correlação (Pearson)
+    corr_val = df_corr[["prazo_solucao", "taxa_procedencia"]].corr(method="pearson").iloc[0, 1]
+
+    # Mostrar KPI da correlação
+    st.metric("Coeficiente de Correlação (Pearson)", f"{corr_val:.2f}")
+
+    # Gráfico scatter
+    fig_corr = px.scatter(
+        df_corr,
+        x="prazo_solucao",
+        y="taxa_procedencia",
+        size="qtd_reclamacoes_recebidas",
+        hover_name="distribuidora",
+        trendline="ols",
+        labels={
+            "prazo_solucao": "Prazo Médio Solução (dias)",
+            "taxa_procedencia": "Taxa de Procedência"
+        },
+        title="Correlação entre Prazo Médio e Taxa de Procedência"
+    )
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+# ------------- Clusterização -------------
+with tab5:
+    st.subheader("🔮 Clusterização de Distribuidoras")
+    df_cluster = df.groupby("distribuidora").agg({
+        "qtd_reclamacoes_recebidas": "sum",
+        "qtd_reclamacoes_procedentes": "sum",
+        "prazo_solucao": "mean"
+    }).reset_index()
+
+    # ---- Criando a taxa de procedencia ----
+
+    df_cluster["taxa_procedencia"] = (
+        df_cluster["qtd_reclamacoes_procedentes"] / df_cluster["qtd_reclamacoes_recebidas"]
+    ) * 100
+
+
+    # ---- Seleção de features ----
+
+    features = df_cluster[["qtd_reclamacoes_recebidas", "prazo_solucao", "taxa_procedencia"]]
+
+    # ---- Normalização ----
+
+    scaler = StandardScaler()
+    features_scaled = scaler.fit_transform(features)
+
+    # ---- K-means ----
+
+
+    inertia = []
+    for k in range(2, 8):
+        km = KMeans(n_clusters=k, random_state=42, n_init=10)
+        km.fit(features_scaled)
+        inertia.append(km.inertia_)
+
+    with st.expander("Ver elbow: "):
+        st.line_chart(pd.DataFrame({"k": range(2, 8), "inertia": inertia}).set_index("k"))
+
+
+    # kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+    df_cluster["cluster"] = km.fit_predict(features_scaled)
+
+    # --- Gráfico Scatter ---
+    fig_cluster = px.scatter(
+        df_cluster,
+        x="prazo_solucao",
+        y="taxa_procedencia",
+        size="qtd_reclamacoes_recebidas",
+        color="cluster",
+        hover_name="distribuidora",
+        title="Clusters de Distribuidoras (baseado em Prazo, Procedência e Reclamações)"
+    )
+
+    st.plotly_chart(fig_cluster, use_container_width=True)
+
+
+    # Mostrar tabela de clusters
+    with st.expander("📋 Ver tabela detalhada"):
+        st.dataframe(df_cluster)
